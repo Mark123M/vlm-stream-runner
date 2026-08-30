@@ -38,6 +38,10 @@ namespace {
 
 constexpr int kNumStreams = 1;
 constexpr int kMaxOutstandingObservations = 2;
+constexpr const char * kCameraVideoSize = "1280x720";
+constexpr const char * kCameraFrameFilter = "fps=1";
+constexpr const char * kCameraJpegQuality = "2";
+constexpr int kVisionMaxSliceNums = 2;
 volatile std::sig_atomic_t g_stop_requested = 0;
 
 void signal_handler(int) {
@@ -207,9 +211,10 @@ public:
             close(pipe_fds[1]);
             const std::string input = std::to_string(camera_index_) + ":none";
             execl(ffmpeg_.c_str(), "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                  "-f", "avfoundation", "-framerate", "30", "-pixel_format", "nv12",
+                  "-f", "avfoundation", "-framerate", "30", "-video_size", kCameraVideoSize,
+                  "-pixel_format", "nv12",
                   "-i", input.c_str(),
-                  "-vf", "fps=1,scale=640:360", "-q:v", "4", "-f", "image2pipe",
+                  "-vf", kCameraFrameFilter, "-q:v", kCameraJpegQuality, "-f", "image2pipe",
                   "-vcodec", "mjpeg", "pipe:1", static_cast<char *>(nullptr));
             _exit(127);
         }
@@ -442,6 +447,7 @@ public:
         OmniDuplexFrame frame;
         if (!camera_.copy(frame.img_bytes)) return SubmitResult::NoCameraFrame;
         frame.aud_bytes = vlm::make_wav_pcm16(microphone_.take_latest(vlm::kOneSecondMicSamples));
+        frame.max_slice_nums = kVisionMaxSliceNums;
         frame.user_seq = iteration;
         outstanding_.fetch_add(1);
         if (omni_duplex_push_frame(context_, frame) < 0) {
@@ -523,6 +529,9 @@ ModelRuntime initialize_model(const Options & options, const ModelPaths & paths,
     params->n_ctx = 8192;
     params->n_parallel = kNumStreams;
     params->n_gpu_layers = 99;
+    // The LLM sampler owns a copy of these parameters, so construct it with
+    // temperature zero to make the duplex SPEAK/LISTEN decision greedy.
+    params->sampling.temp = 0.0f;
     if (options.vision_backend == "coreml") {
         params->vision_coreml_model_path = paths.coreml.string();
     }
@@ -534,7 +543,14 @@ ModelRuntime initialize_model(const Options & options, const ModelPaths & paths,
         &omni_free);
     if (!context) throw std::runtime_error("model initialization failed");
 
+    // TTS acoustic-token helpers read the live common_params object rather
+    // than the LLM sampler's copy. Restore their intended sampling temperature
+    // without changing the already-created greedy LLM sampler.
+    params->sampling.temp = context->tts_temperature;
+
     context->async = true;
+    context->force_listen_count = 0;
+    context->force_listen_used = 0;
     context->ref_audio_path = options.ref_audio.string();
     context->sliding_window_config.mode = "turn";
     context->sliding_window_config.high_water_tokens = 7000;

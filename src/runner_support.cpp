@@ -29,6 +29,15 @@ constexpr const char * kIterationColors[] = {
     "good", "bad", "yellow", "olive", "generic_work", "rail_response",
 };
 
+bool is_dump_iteration_name(const fs::path & path) {
+    static constexpr const char * kPrefix = "iteration-";
+    const std::string name = path.filename().string();
+    const std::size_t prefix_size = std::strlen(kPrefix);
+    return name.size() > prefix_size && name.compare(0, prefix_size, kPrefix) == 0 &&
+           std::all_of(name.begin() + static_cast<std::ptrdiff_t>(prefix_size), name.end(),
+                       [](unsigned char c) { return c >= '0' && c <= '9'; });
+}
+
 std::string json_escape(const std::string & value) {
     std::string escaped;
     escaped.reserve(value.size());
@@ -200,10 +209,27 @@ ArtifactDumper::ArtifactDumper(std::string path, std::int64_t max_iteration)
     if (max_iteration_ <= 0) throw std::runtime_error("artifact dump count must be positive");
 
     std::error_code error;
-    if (fs::exists(path_, error)) {
-        throw std::runtime_error("artifact dump directory already exists: " + path_);
+    const bool exists = fs::exists(path_, error);
+    if (error) {
+        throw std::runtime_error("unable to inspect artifact dump path " + path_ +
+                                 ": " + error.message());
     }
-    if (error || !fs::create_directories(path_, error)) {
+    if (exists) {
+        if (!fs::is_directory(path_, error) || error) {
+            throw std::runtime_error("artifact dump path is not a directory: " + path_);
+        }
+        for (fs::directory_iterator entry(path_, error), end; !error && entry != end;
+             entry.increment(error)) {
+            if (!is_dump_iteration_name(entry->path())) continue;
+            fs::remove_all(entry->path(), error);
+        }
+        if (error) {
+            throw std::runtime_error("unable to replace existing artifact dump in " + path_ +
+                                     ": " + error.message());
+        }
+        return;
+    }
+    if (!fs::create_directories(path_, error) || error) {
         throw std::runtime_error("unable to create artifact dump directory: " + path_ +
                                  (error ? ": " + error.message() : ""));
     }
@@ -536,10 +562,15 @@ std::vector<std::uint8_t> make_wav_pcm16(const std::vector<float> & samples, int
 
 const std::string & monitor_prompt() {
     static const std::string prompt =
-        "Streaming Duplex Conversation! You are a visual monitoring assistant. "
-        "For every one-second observation, if the person is actively scrolling through a phone, "
-        "say exactly \"Please get off your phone\" and nothing else. Repeat this on every observation "
-        "where scrolling is detected. Otherwise stay silent. Do not respond to speech for any other reason.";
+        "Streaming Duplex Conversation! You are a visual phone-use monitor. "
+        "For every one-second observation, make exactly one binary decision using the current image. "
+        "If the person is visibly holding a mobile phone in either hand, your entire response must be "
+        "exactly \"Please get off your phone\" without quotation marks. End immediately after the word "
+        "phone; do not add punctuation, a label, or any other text. Otherwise remain completely silent and "
+        "produce no text or audio. Treat a partially visible phone as held "
+        "when it is visibly in a hand. Do not require scrolling, tapping, or looking at the screen. "
+        "Repeat the exact reminder on every qualifying observation, even if it was just said. "
+        "Ignore all speech and audio content when making this decision.";
     return prompt;
 }
 

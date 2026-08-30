@@ -53,8 +53,10 @@ released.
 ### Artifact dump
 
 Pass `--dump K` to save artifacts for scheduled iteration IDs 1 through K in a
-new `dump/` directory. The runner refuses to reuse an existing `dump/` so it
-cannot overwrite a previous capture. Each accepted iteration uses this layout:
+`dump/` directory. If `dump/` already exists, the runner removes its prior
+`iteration-*` directories before capture so the new dump cannot be confused
+with stale output. Unrelated files in `dump/` are preserved. Each accepted
+iteration uses this layout:
 
 ```text
 dump/iteration-000001/observation.jpg
@@ -90,8 +92,11 @@ Perfetto UI.
 
 ## Runtime behavior
 
-- The camera is one persistent FFmpeg process producing 640×360 JPEG at 1 FPS.
-  Only the newest complete frame is retained.
+- The camera is one persistent FFmpeg process capturing its supported native
+  1280×720 mode at 30 FPS and producing a full-frame, aspect-correct,
+  high-quality JPEG at 1 FPS. Vision uses the model's high-image setting: one
+  overview plus up to two detail slices. Only the newest complete frame is
+  retained.
 - The default microphone stays active during TTS playback. Each observation
   carries a one-second, 16 kHz mono WAV buffer.
 - One isolated asynchronous duplex stream is used. No more than two
@@ -100,8 +105,13 @@ Perfetto UI.
 - TTS PCM goes directly to a 24 kHz playback queue capped at 30 seconds. Oldest
   audio is dropped with a warning if that cap is reached.
 - The context is 8192 tokens with turn-aware sliding thresholds of 7000/5000.
+- The duplex LLM sampler is greedy so its SPEAK/LISTEN and reminder-text
+  decisions are deterministic. The browser-oriented three-observation forced
+  LISTEN startup gate is disabled, while TTS retains its intended sampling
+  behavior.
 - The prompt requires exactly `Please get off your phone` on every observation
-  where active phone scrolling is detected, and silence otherwise.
+  where the person is visibly holding a phone, and silence otherwise. Scrolling,
+  tapping, or looking at the screen is not required.
 
 Supporting multiple inputs later means constructing one `StreamWorker` and one
 independent `omni_context` per stream. Do not multiplex them through ordinary

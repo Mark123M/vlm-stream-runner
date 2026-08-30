@@ -10,7 +10,7 @@ that repository; in particular, do not commit or push on the user's behalf.
 - Monitor the built-in MacBook camera and default microphone continuously.
 - Once per second, submit the latest visual observation plus the latest one
   second of microphone audio to MiniCPM-o 4.5's streaming duplex pipeline.
-- If the person is actively scrolling through a phone, say exactly
+- If the person is visibly holding a phone, say exactly
   `Please get off your phone` and nothing else. Repeat on every qualifying
   observation. Otherwise remain silent and ignore speech.
 - The prompt language is English. Voice timbre and accent come from the
@@ -52,9 +52,11 @@ that repository; in particular, do not commit or push on the user's behalf.
 - A scheduled iteration ID is one-based and advances on every 1 Hz tick,
   including rejected ticks. Propagate it through encoder, LLM, TTS,
   Token2Wav, PCM callbacks, playback, and traces.
-- Camera input runs at a supported AVFoundation rate (currently 30 FPS), then
-  FFmpeg filters it to 1 FPS and scales to 640x360 MJPEG over stdout. Retain
-  only the latest complete JPEG in memory.
+- Camera input runs at the supported native 1280x720 AVFoundation mode at
+  30 FPS, then FFmpeg filters it to 1 FPS and emits a full-frame,
+  aspect-correct, high-quality MJPEG over stdout. Each observation requests the
+  model's high-image setting of one overview plus up to two detail slices.
+  Retain only the latest complete JPEG in memory.
 - A duplex `OmniDuplexFrame` currently contains one selected JPEG plus one
   second of 16 kHz mono audio. The physical camera observes many frames, but
   the current runner/model integration selects one image per one-second model
@@ -64,6 +66,10 @@ that repository; in particular, do not commit or push on the user's behalf.
   enclosing wall time is approximately `max(vision, audio)`, not their sum.
 - TTS and Token2Wav have independent workers and may process different
   iterations concurrently; keep them as distinct pipeline stages.
+- The duplex LLM sampler is greedy so SPEAK/LISTEN and reminder text are
+  deterministic. The browser-oriented three-observation forced-LISTEN startup
+  gate is disabled so iteration 1 receives a real model decision. Preserve the
+  TTS sampler's intended stochastic behavior.
 - TTS PCM is resampled/routed directly into an in-memory 24 kHz playback queue.
   The queue is capped at 30 seconds; drop oldest tagged PCM on overflow and
   emit a warning plus a trace drop event.
@@ -84,6 +90,8 @@ that repository; in particular, do not commit or push on the user's behalf.
   hooks must remain additive/backward-compatible.
 - Existing workspace files and user traces such as `monitor.json` are user
   data. Do not overwrite, remove, or clean them unless explicitly requested.
+- An explicitly requested `--dump` run may reuse `dump/`: remove only prior
+  runner-owned `iteration-*` directories and preserve unrelated contents.
 
 ## Perfetto trace contract
 
@@ -180,9 +188,11 @@ Before handing off relevant changes:
   stage ordering, overlap, queue bounds, and `omitted_events`.
 - Do not claim the two-hour soak test has passed unless it was actually run.
 
-Current healthy short-run baseline (not a hard performance requirement): a
-25-iteration CoreML trace had no dropped or omitted events, encoder mean about
-345 ms (max 365 ms), LLM mean about 183 ms (max 194 ms), and at least 423 ms
-of headroom before the next 1 Hz deadline. Some LLM latency growth as context
-accumulates is expected; verify long-run sliding-window behavior with a soak
-test rather than extrapolating from this short sample.
+Previous healthy 640x360 overview-only short-run baseline: a 25-iteration
+CoreML trace had no dropped or omitted events, encoder mean about 345 ms (max
+365 ms), and LLM mean about 183 ms (max 194 ms). The current 1280x720
+high-image path (overview plus two detail slices) had no dropped or omitted
+events in a 15-iteration CoreML trace, with encoder mean about 789 ms (max
+863 ms). These are not hard performance requirements. Some LLM latency growth
+as context accumulates is expected; verify long-run sliding-window behavior
+with a soak test rather than extrapolating from either short sample.

@@ -76,10 +76,17 @@ void test_wav_construction() {
 }
 
 void test_prompt_wrapping() {
-    CHECK(vlm::monitor_prompt().find("say exactly \"Please get off your phone\"") != std::string::npos);
-    const auto wrapped = vlm::wrap_duplex_system_prompt(vlm::monitor_prompt());
+    const std::string & prompt = vlm::monitor_prompt();
+    CHECK(prompt.find("visibly holding a mobile phone") != std::string::npos);
+    CHECK(prompt.find("Do not require scrolling, tapping, or looking at the screen") != std::string::npos);
+    CHECK(prompt.find("exactly \"Please get off your phone\" without quotation marks") != std::string::npos);
+    CHECK(prompt.find("do not add punctuation, a label, or any other text") != std::string::npos);
+    CHECK(prompt.find("SPEAK") == std::string::npos);
+    CHECK(prompt.find("LISTEN") == std::string::npos);
+    CHECK(prompt.find("actively scrolling through a phone") == std::string::npos);
+    const auto wrapped = vlm::wrap_duplex_system_prompt(prompt);
     CHECK(wrapped.first.rfind("<|im_start|>system\n", 0) == 0);
-    CHECK(wrapped.first.find(vlm::monitor_prompt()) != std::string::npos);
+    CHECK(wrapped.first.find(prompt) != std::string::npos);
     const std::string audio_start = "<|audio_start|>";
     CHECK(wrapped.first.size() >= audio_start.size() &&
           wrapped.first.substr(wrapped.first.size() - audio_start.size()) == audio_start);
@@ -169,10 +176,10 @@ void test_artifact_dump() {
     const fs::path path = fs::temp_directory_path() /
         ("vlm-stream-runner-unit-dump-" + std::to_string(
             std::chrono::steady_clock::now().time_since_epoch().count()));
+    const std::vector<std::uint8_t> image = {0xff, 0xd8, 0xff, 0xd9};
+    const std::vector<std::uint8_t> audio = vlm::make_wav_pcm16({0.0f, 0.5f});
     {
         vlm::ArtifactDumper dump(path.string(), 2);
-        const std::vector<std::uint8_t> image = {0xff, 0xd8, 0xff, 0xd9};
-        const std::vector<std::uint8_t> audio = vlm::make_wav_pcm16({0.0f, 0.5f});
         CHECK(dump.record_observation(1, image, audio));
         CHECK(dump.record_llm(1, "Please get off your phone"));
         const float first[] = {-1.0f, 0.0f};
@@ -186,14 +193,6 @@ void test_artifact_dump() {
         CHECK(dump.record_observation(3, image, audio));
         CHECK(!fs::exists(path / "iteration-000003"));
     }
-
-    bool refused_existing_directory = false;
-    try {
-        vlm::ArtifactDumper duplicate(path.string(), 2);
-    } catch (...) {
-        refused_existing_directory = true;
-    }
-    CHECK(refused_existing_directory);
 
     const fs::path iteration = path / "iteration-000001";
     std::ifstream image_input(iteration / "observation.jpg", std::ios::binary);
@@ -217,6 +216,24 @@ void test_artifact_dump() {
         CHECK(le32(wav, 24) == 24000);
         CHECK(le32(wav, 40) == 6);
     }
+
+    {
+        std::ofstream keep(path / "keep.txt");
+        keep << "unrelated";
+    }
+    {
+        vlm::ArtifactDumper replacement(path.string(), 1);
+        CHECK(!fs::exists(path / "iteration-000001"));
+        CHECK(!fs::exists(path / "iteration-000002"));
+        CHECK(fs::is_regular_file(path / "keep.txt"));
+        CHECK(replacement.record_observation(1, image, audio));
+        CHECK(replacement.record_llm(1, ""));
+    }
+    CHECK(fs::is_regular_file(path / "iteration-000001" / "observation.jpg"));
+    CHECK(fs::is_regular_file(path / "iteration-000001" / "llm.txt"));
+    CHECK(!fs::exists(path / "iteration-000001" / "tts.wav"));
+    CHECK(!fs::exists(path / "iteration-000002"));
+    CHECK(fs::is_regular_file(path / "keep.txt"));
     fs::remove_all(path);
 }
 
